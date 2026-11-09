@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>クアルト 抽象ボードゲーム AI対戦</title>
+<script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-900 text-white min-h-screen flex flex-col items-center p-4">
+<h1 class="text-2xl font-bold mb-1 text-center">♟ クアルト（Quarto）</h1>
+<p class="text-gray-400 text-sm mb-3 text-center">相手が渡した駒を配置して同じ属性4個一直線を作る</p>
+<div class="flex flex-wrap gap-6 justify-center">
+  <div>
+    <h2 class="text-sm text-gray-400 mb-2 text-center">ボード（4×4）</h2>
+    <div id="board" class="grid grid-cols-4 gap-1 bg-amber-900 p-2 rounded-lg shadow-xl" style="width:240px;height:240px"></div>
+    <div id="msg" class="text-center mt-2 text-sm font-bold min-h-5"></div>
+  </div>
+  <div>
+    <h2 class="text-sm text-gray-400 mb-2 text-center">残り駒（16個）</h2>
+    <div id="pieces" class="grid grid-cols-4 gap-1 bg-gray-800 p-2 rounded-lg" style="width:240px"></div>
+    <div class="mt-3 text-xs text-gray-500">
+      <p>属性: <span class="text-yellow-400">高/低</span> <span class="text-blue-400">丸/四角</span> <span class="text-white">白/黒</span> <span class="text-green-400">穴/無穴</span></p>
+    </div>
+  </div>
+</div>
+<div class="flex gap-3 mt-4">
+  <button id="newGame" class="bg-indigo-600 hover:bg-indigo-500 px-5 py-2 rounded font-bold transition">新しいゲーム</button>
+  <button id="toggleAI" class="bg-gray-700 hover:bg-gray-600 px-5 py-2 rounded text-sm transition">AI: ON</button>
+</div>
+<div class="mt-3 text-xs text-gray-600 text-center max-w-xs">
+  手順: 相手に駒を渡す → 相手がその駒をボードに置く → 一直線4個同属性でWIN
+</div>
+<script>
+// Piece: [tall/short, round/square, light/dark, hole/solid] each 0 or 1
+// 16 pieces: all combinations
+
+let board, remaining, selectedPiece, phase, turn, aiEnabled, gameOver;
+// phase: 'give' (player selects piece to give AI) or 'place' (player places piece AI gave)
+
+function initGame(){
+  board = Array(16).fill(-1);
+  remaining = Array.from({length:16},(_,i)=>i);
+  selectedPiece = -1;
+  phase = 'give'; // human gives piece to AI first
+  turn = 'human';
+  aiEnabled = true;
+  gameOver = false;
+  renderAll();
+  setMsg('あなたが先手: AIに渡す駒を選んでください');
+}
+
+function pieceAttrs(p){
+  return [(p>>3)&1,(p>>2)&1,(p>>1)&1,p&1];
+}
+
+function checkWin(brd){
+  const lines = [
+    [0,1,2,3],[4,5,6,7],[8,9,10,11],[12,13,14,15], // rows
+    [0,4,8,12],[1,5,9,13],[2,6,10,14],[3,7,11,15], // cols
+    [0,5,10,15],[3,6,9,12] // diags
+  ];
+  for(let line of lines){
+    if(line.some(i=>brd[i]<0)) continue;
+    for(let attr=0;attr<4;attr++){
+      const vs=line.map(i=>pieceAttrs(brd[i])[attr]);
+      if(vs.every(v=>v===vs[0])) return true;
+    }
+  }
+  return false;
+}
+
+function pieceHTML(p, small=false){
+  if(p<0) return '<div class="w-full h-full"></div>';
+  const a=pieceAttrs(p);
+  const tall=a[0], round=a[1], light=a[2], hole=a[3];
+  const size=small?'w-8 h-8':'w-12 h-12';
+  const bg=light?'bg-amber-200 border-amber-400':'bg-gray-700 border-gray-500';
+  const shape=round?'rounded-full':'rounded';
+  const border='border-2';
+  const h=hole?'<div class="absolute inset-0 flex items-center justify-center"><div class="w-2 h-2 rounded-full bg-gray-900 opacity-70"></div></div>':'';
+  const height=tall?'self-end mb-1':'self-center';
+  const hPx=tall?'h-10':'h-7';
+  return `<div class="relative flex items-center justify-center ${size} ${bg} ${border} ${shape} ${height}">
+    <div class="${round?'rounded-full':'rounded'} ${light?'bg-amber-100':'bg-gray-600'} ${tall?'w-6 h-8':'w-6 h-5'}"></div>
+    ${h}
+  </div>`;
+}
+
+function renderAll(){
+  const boardEl=document.getElementById('board');
+  boardEl.innerHTML='';
+  for(let i=0;i<16;i++){
+    const cell=document.createElement('div');
+    cell.className='bg-amber-800 rounded flex items-center justify-center cursor-pointer hover:bg-amber-700 transition';
+    cell.style='width:54px;height:54px';
+    cell.innerHTML=pieceHTML(board[i]);
+    if(!gameOver && phase==='place' && turn==='human' && board[i]<0){
+      cell.addEventListener('click',()=>placeSelectedPiece(i));
+    }
+    boardEl.appendChild(cell);
+  }
+
+  const piecesEl=document.getElementById('pieces');
+  piecesEl.innerHTML='';
+  for(let i=0;i<16;i++){
+    const div=document.createElement('div');
+    div.className='flex items-center justify-center rounded cursor-pointer transition';
+    div.style='width:54px;height:54px';
+    if(remaining.includes(i)){
+      div.className+=' bg-gray-700 hover:bg-gray-600';
+      if(selectedPiece===i) div.className+=' ring-2 ring-yellow-400';
+      div.innerHTML=pieceHTML(i);
+      if(!gameOver && phase==='give' && turn==='human'){
+        div.addEventListener('click',()=>selectPieceToGive(i));
+      }
+    } else {
+      div.className+=' bg-gray-900 opacity-30';
+      div.innerHTML=pieceHTML(i);
+    }
+    piecesEl.appendChild(div);
+  }
+}
+
+function setMsg(m,c='text-white'){
+  const el=document.getElementById('msg');
+  el.textContent=m;
+  el.className=`text-center mt-2 text-sm font-bold min-h-5 ${c}`;
+}
+
+function selectPieceToGive(p){
+  if(gameOver||phase!=='give'||turn!=='human') return;
+  selectedPiece=p;
+  remaining=remaining.filter(r=>r!==p);
+  phase='ai-place';
+  renderAll();
+  setMsg(`AIが駒 #${p} をボードに置いています...`,'text-yellow-400');
+  setTimeout(aiPlace,600);
+}
+
+function aiPlace(){
+  // AI places selectedPiece randomly (or best)
+  const empty=board.map((v,i)=>v<0?i:-1).filter(i=>i>=0);
+  let bestPos=empty[Math.floor(Math.random()*empty.length)];
+  // Try to win
+  for(let pos of empty){
+    const test=[...board]; test[pos]=selectedPiece;
+    if(checkWin(test)){ bestPos=pos; break; }
+  }
+  board[bestPos]=selectedPiece;
+  selectedPiece=-1;
+  if(checkWin(board)){ renderAll(); setMsg('AIの勝ち！','text-red-400'); gameOver=true; return; }
+  if(remaining.length===0){ renderAll(); setMsg('引き分け！','text-yellow-400'); gameOver=true; return; }
+  phase='give'; turn='human';
+  renderAll();
+  setMsg('あなたがAIに渡す駒を選んでください');
+}
+
+function placeSelectedPiece(pos){
+  if(gameOver||phase!=='place'||turn!=='human') return;
+  if(board[pos]>=0) return;
+  board[pos]=selectedPiece;
+  selectedPiece=-1;
+  if(checkWin(board)){ renderAll(); setMsg('あなたの勝ち！🎉','text-green-400'); gameOver=true; return; }
+  if(remaining.length===0){ renderAll(); setMsg('引き分け！','text-yellow-400'); gameOver=true; return; }
+  // AI picks piece to give
+  phase='ai-give';
+  renderAll();
+  setTimeout(aiGive,500);
+}
+
+function aiGive(){
+  // AI picks a piece to give that doesn't immediately allow human to win
+  let candidates=[...remaining];
+  let pick=candidates[Math.floor(Math.random()*candidates.length)];
+  // Try to avoid giving a piece that lets human win immediately
+  for(let p of candidates){
+    const tempRemaining=remaining.filter(r=>r!==p);
+    const empty=board.map((v,i)=>v<0?i:-1).filter(i=>i>=0);
+    let humanCanWin=false;
+    for(let pos of empty){
+      const test=[...board]; test[pos]=p;
+      if(checkWin(test)){ humanCanWin=true; break; }
+    }
+    if(!humanCanWin){ pick=p; break; }
+  }
+  remaining=remaining.filter(r=>r!==pick);
+  selectedPiece=pick;
+  phase='place'; turn='human';
+  renderAll();
+  setMsg(`AIが駒 #${pick} を渡しました。ボードに置いてください`,'text-blue-300');
+}
+
+document.getElementById('newGame').addEventListener('click',initGame);
+document.getElementById('toggleAI').addEventListener('click',function(){
+  aiEnabled=!aiEnabled;
+  this.textContent=`AI: ${aiEnabled?'ON':'OFF'}`;
+});
+initGame();
+</script>
+</body>
+</html>
